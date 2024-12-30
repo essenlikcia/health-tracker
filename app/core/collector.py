@@ -9,7 +9,7 @@ import prometheus_client as pc
 
 from typing import Dict
 from dotenv import load_dotenv
-from datetime import datetime, date
+from .metrics import HealthMetrics
 
 DEFAULT_PORT = 9100
 DEFAULT_UPDATE_INTERVAL = 7 * 24 * 60 * 60
@@ -30,6 +30,7 @@ class HealthTracker:
 
         self.metrics_file = os.getenv('METRICS_FILE_PATH', '/app/config/health_metrics.json')
         self.update_interval = int(os.getenv('UPDATE_INTERVAL', DEFAULT_UPDATE_INTERVAL))
+        self.health_metrics = HealthMetrics()
 
         self.conn_params = {
             'dbname': os.getenv('POSTGRES_DB', DEFAULT_DB_NAME),
@@ -42,42 +43,6 @@ class HealthTracker:
         if not self.conn_params['password']:
             raise ValueError("Database password is required")
 
-        self.metrics: Dict[str, pc.Gauge] = {
-            'body_weight': pc.Gauge('body_weight', 'Body Weight in Kilograms'),
-            'body_height': pc.Gauge('body_height', 'Body Height in Centimeters'),
-            'age': pc.Gauge('age', 'Precise Age'),
-            'bmi': pc.Gauge('bmi', 'Body Mass Index')
-        }
-
-    def calculate_age(self, birth_date_str):
-        if not birth_date_str:
-            return None
-
-        try:
-            birth_date = datetime.strptime(birth_date_str, '%Y-%m-%d').date()
-            today = date.today()
-
-            age = (today - birth_date).days / 365.25
-
-            return round(age, 1)
-        except (ValueError, TypeError) as e:
-            logger.error(f"Error calculating age: {e}")
-            return None
-
-    def calculate_bmi(self, weight_kg, height_cm):
-        if not weight_kg or not height_cm:
-            return None
-
-        try:
-            height_m = height_cm / 100
-
-            bmi = weight_kg / (height_m ** 2)
-
-            return round(bmi, 1)
-        except (TypeError, ZeroDivisionError) as e:
-            logger.error(f"Error calculating BMI: {e}")
-            return None
-
     def read_metrics(self):
         try:
             temp_file = self.metrics_file + '.tmp'
@@ -87,21 +52,8 @@ class HealthTracker:
                 raw_metrics = json.load(f)
 
             os.remove(temp_file)
+            return self.health_metrics.process_raw_metrics(raw_metrics)
 
-            metrics = {}
-
-            metrics['body_weight'] = raw_metrics.get('body_weight')
-            metrics['body_height'] = raw_metrics.get('body_height')
-
-            if 'birth_date' in raw_metrics:
-                metrics['age'] = self.calculate_age(raw_metrics['birth_date'])
-
-            metrics['bmi'] = self.calculate_bmi(
-                raw_metrics.get('body_weight'),
-                raw_metrics.get('body_height')
-            )
-
-            return metrics
         except FileNotFoundError:
             logger.warning(f"Metrics file {self.metrics_file} not found.")
             return None
@@ -138,6 +90,8 @@ class HealthTracker:
                             body_height FLOAT,
                             age FLOAT,
                             bmi FLOAT,
+                            water_intake FLOAT,
+                            sleep_duration FLOAT,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                         )
                     """)
@@ -157,36 +111,31 @@ class HealthTracker:
                         body_weight,
                         body_height,
                         age,
-                        bmi
+                        bmi,
+                        water_intake,
+                        sleep_duration
                     ) VALUES (
                         %(body_weight)s,
                         %(body_height)s,
                         %(age)s,
-                        %(bmi)s
+                        %(bmi)s,
+                        %(water_intake)s,
+                        %(sleep_duration)s
                     )
                     """
 
-                    db_metrics = {
-                        'body_weight': metrics.get('body_weight'),
-                        'body_height': metrics.get('body_height'),
-                        'age': metrics.get('age'),
-                        'bmi': metrics.get('bmi')
-                    }
-
-                    cur.execute(query, db_metrics)
+                    cur.execute(query, metrics)
                     conn.commit()
                     logger.info(f"Updated metrics: {metrics}")
                     logger.info("Health metrics recorded successfully")
 
-                    for metric_name, value in metrics.items():
-                        if value is not None and metric_name in self.metrics:
-                            self.metrics[metric_name].set(value)
+                    self.health_metrics.update_prometheus_metrics(metrics)
 
         except Exception as e:
             logger.error(f"Database recording error: {e}")
             raise
 
-    def start_metrics_server(self, port: int = 9100):
+    def start_metrics_server(self, port: int = DEFAULT_PORT):
         pc.start_http_server(port)
         logger.info(f"Metrics server started on port {port}")
 
@@ -214,7 +163,7 @@ if __name__ == '__main__':
         tracker.db_operations()
         logger.info("Database and table initialization completed")
 
-        tracker.start_metrics_server(DEFAULT_PORT)
+        tracker.start_metrics_server()
 
         updater_thread = threading.Thread(target=tracker.periodic_update, daemon=True)
         updater_thread.start()
