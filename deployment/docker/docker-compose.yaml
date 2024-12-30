@@ -1,0 +1,43 @@
+services:
+  health-tracker:
+    build:
+      context: ../..
+      dockerfile: deployment/docker/Dockerfile
+    env_file:
+      - ../../.env
+    volumes:
+      - ../../app/config/health_metrics.json:/app/config/health_metrics.json
+    ports:
+      - "9100:9100"
+    networks:
+      - custom-network
+    restart: always
+
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - ../config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - custom-network
+    restart: always
+
+  grafana:
+    image: grafana/grafana
+    volumes:
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - custom-network
+    restart: always
+
+networks:
+  custom-network:
+    external: true
+
+volumes:
+  prometheus-data:
+  grafana-data:

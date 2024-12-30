@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 60s
+
+scrape_configs:
+  - job_name: 'health-metrics'
+    static_configs:
+      - targets: ['health-tracker:9100']
